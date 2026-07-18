@@ -49,24 +49,24 @@ const MODEL = "gemini-flash-lite-latest";
 `BLOCK_MEDIUM_AND_ABOVE`  -  Block when medium or high probability of unsafe content
 `BLOCK_LOW_AND_ABOVE`  -  Block when low, medium or high probability of unsafe content
 `HARM_BLOCK_THRESHOLD_UNSPECIFIED`  -  Threshold is unspecified, block using default threshold
-*/
-const safetySettings = [{
-    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-    threshold: HarmBlockThreshold.BLOCK_NONE,
-  },
-  {
-    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-    threshold: HarmBlockThreshold.BLOCK_NONE,
-  },
-  {
-    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-    threshold: HarmBlockThreshold.BLOCK_NONE,
-  },
-  {
-    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-    threshold: HarmBlockThreshold.BLOCK_NONE,
-  },
-];
+// */
+// const safetySettings = [{
+//     category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+//     threshold: HarmBlockThreshold.BLOCK_NONE,
+//   },
+//   {
+//     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+//     threshold: HarmBlockThreshold.BLOCK_NONE,
+//   },
+//   {
+//     category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+//     threshold: HarmBlockThreshold.BLOCK_NONE,
+//   },
+//   {
+//     category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+//     threshold: HarmBlockThreshold.BLOCK_NONE,
+//   },
+// ];
 
 const generationConfig = {
   temperature: 1.0,
@@ -180,7 +180,6 @@ client.on('messageCreate', async (message) => {
       lastMessageTimes[message.channelId] = Date.now();
     }
 
-    // Шанс спонтанного втручання в розмову (3%), якщо бота не згадали напряму
     const SPONTANEOUS_CHANCE = 0.03;
     const isMentioned = message.mentions.users.has(client.user.id);
     const isSpontaneous = !isMentioned && !isDM && (Math.random() < SPONTANEOUS_CHANCE);
@@ -206,19 +205,17 @@ client.on('messageCreate', async (message) => {
           });
         }
       }
+
+      // <=====[ФІКС ТУТ]=====>
+      // Якщо Орешка вже обробляє запит від цього юзера, нові повідомлення 
+      // просто ігноруються. Ніякого спаму та ембед-помилок у чат!
       if (activeRequests.has(message.author.id)) {
-        const embed = new EmbedBuilder()
-          .setColor(0xFFFF00)
-          .setTitle('Request In Progress')
-          .setDescription('Please wait until your previous action is complete.');
-        await message.reply({
-          embeds: [embed]
-        });
-      } else {
-        activeRequests.add(message.author.id);
-        // Запускаємо логіку обробки тексту, передаючи прапорець чи це випадковий виклик
-        await handleTextMessage(message, isSpontaneous);
+        return;
       }
+
+      // Якщо все ок, додаємо в чергу запитів і починаємо писати відповідь
+      activeRequests.add(message.author.id);
+      await handleTextMessage(message, isSpontaneous);
     }
   } catch (error) {
     console.error('Error processing the message:', error);
@@ -235,54 +232,6 @@ client.on('messageCreate', async (message) => {
 
 
 // <=====[Messages And Interaction]=====>
-
-client.on('messageCreate', async (message) => {
-  try {
-    if (message.author.bot) return;
-    if (message.content.startsWith('!')) return;
-
-    const isDM = message.channel.type === ChannelType.DM;
-
-    const shouldRespond = (
-      workInDMs && isDM ||
-      state.alwaysRespondChannels[message.channelId] ||
-      (message.mentions.users.has(client.user.id) && !isDM) ||
-      state.activeUsersInChannels[message.channelId]?.[message.author.id]
-    );
-
-    if (shouldRespond) {
-      if (message.guild) {
-        initializeBlacklistForGuild(message.guild.id);
-        if (state.blacklistedUsers[message.guild.id].includes(message.author.id)) {
-          const embed = new EmbedBuilder()
-            .setColor(0xFF0000)
-            .setTitle('Blacklisted')
-            .setDescription('You are blacklisted and cannot use this bot.');
-          return message.reply({
-            embeds: [embed]
-          });
-        }
-      }
-      if (activeRequests.has(message.author.id)) {
-        const embed = new EmbedBuilder()
-          .setColor(0xFFFF00)
-          .setTitle('Request In Progress')
-          .setDescription('Please wait until your previous action is complete.');
-        await message.reply({
-          embeds: [embed]
-        });
-      } else {
-        activeRequests.add(message.author.id);
-        await handleTextMessage(message);
-      }
-    }
-  } catch (error) {
-    console.error('Error processing the message:', error);
-    if (activeRequests.has(message.author.id)) {
-      activeRequests.delete(message.author.id);
-    }
-  }
-});
 
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -486,6 +435,10 @@ async function editShowSettings(interaction) {
 
 // <=====[Messages Handling]=====>
 
+// <=====[Modified Messages Handling]=====>
+
+// <=====[Modified Messages Handling]=====>
+
 async function handleTextMessage(message, isSpontaneous = false) {
   const botId = client.user.id;
   const userId = message.author.id;
@@ -510,124 +463,144 @@ async function handleTextMessage(message, isSpontaneous = false) {
     return;
   }
 
-  message.channel.sendTyping();
-  const typingInterval = setInterval(() => {
+  // Створюємо об'єкт для тотального контролю часу та таймерів
+  const typingControls = {
+    startTime: Date.now(), // Фіксуємо точний час отримання повідомлення
+    startTypingTimeout: null,
+    typingInterval: null,
+    typingTimeout: null
+  };
+
+  // НАЛАШТУВАННЯ ЗАДРИМКИ СТАТУСУ: Перші 3 секунди Орешка ігнорує статус друку (повна тиша)
+  typingControls.startTypingTimeout = setTimeout(() => {
     message.channel.sendTyping();
-  }, 4000);
+    typingControls.typingInterval = setInterval(() => {
+      message.channel.sendTyping();
+    }, 4000);
 
-  setTimeout(() => {
-    clearInterval(typingInterval);
-  }, 120000);
+    // Запобіжник на 2 хвилини
+    typingControls.typingTimeout = setTimeout(() => {
+      if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
+    }, 120000);
+  }, 3000); // 3000 мс = 3 секунди тиші перед «друк...»
 
-  // Генеруємо chatId для твого Vercel API. 
-  // Якщо історія каналу спільна — ідентифікуємо за каналом, інакше персонально за користувачем.
+  // Генеруємо chatId для твого Vercel API
   const isChannelChatHistoryEnabled = message.guild ? state.channelWideChatHistory[channelId] : false;
   const isServerChatHistoryEnabled = message.guild ? state.serverSettings[message.guild.id]?.serverChatHistory : false;
   const apiChatId = isChannelChatHistoryEnabled ? `discord_channel_${channelId}` : (isServerChatHistoryEnabled ? `discord_server_${message.guild.id}` : `discord_user_${userId}`);
 
-  // Викликаємо оновлену функцію обробки відповіді моделі через твоє API
-  await handleModelAPIResponse(message, messageContent, apiChatId, message.author.username, typingInterval, isSpontaneous);
+  // Передаємо typingControls далі в обробник відповіді
+  await handleModelAPIResponse(message, messageContent, apiChatId, message.author.username, typingControls, isSpontaneous);
 }
 
-async function handleModelAPIResponse(originalMessage, messageContent, apiChatId, username, typingInterval, isSpontaneous) {
+// <=====[Model API Response Handling]=====>
+
+async function handleModelAPIResponse(originalMessage, messageContent, apiChatId, username, typingControls, isSpontaneous) {
   const userId = originalMessage.author.id;
   const userResponsePreference = originalMessage.guild && state.serverSettings[originalMessage.guild.id]?.serverResponsePreference ? state.serverSettings[originalMessage.guild.id].responseStyle : getUserResponsePreference(userId);
   let attempts = 3;
-
-  let botMessage;
-  clearInterval(typingInterval);
-
-  try {
-    if (isSpontaneous) {
-      // Якщо Орешка втручається сам, ми не пишемо "Let me think.." і не робимо реплай із пінгом,
-      // а просто згодом надішлемо звичайне повідомлення в канал.
-    } else {
-      botMessage = await originalMessage.reply({ content: '...' });
-    }
-  } catch (error) {
-    console.error("Не вдалося створити початкове повідомлення:", error);
-  }
+  let replyText = "";
 
   while (attempts > 0) {
     try {
-      // Запитуємо твій Vercel сервіс
-      const replyText = await askOreshkaAPI(messageContent, apiChatId, username);
+      // Запит на Vercel надходить одразу, щоб не втрачати час на обробку нейромережею
+      replyText = await askOreshkaAPI(messageContent, apiChatId, username);
 
       if (!replyText || replyText.trim() === "") {
         throw new Error("Empty response from Oreshka API");
       }
-
-      // Якщо це спонтанна відповідь, надсилаємо нове повідомлення без реплаю
-      if (isSpontaneous) {
-        if (userResponsePreference === 'Embedded') {
-          const embed = new EmbedBuilder()
-            .setColor(hexColour)
-            .setDescription(replyText)
-            .setTimestamp();
-          if (originalMessage.guild) {
-            embed.setFooter({ text: originalMessage.guild.name, iconURL: originalMessage.guild.iconURL() });
-          }
-          await originalMessage.channel.send({ embeds: [embed] });
-        } else {
-          await originalMessage.channel.send({ content: replyText });
-        }
-      } else if (botMessage) {
-        // Звичайна відповідь на пінг або DM
-        if (userResponsePreference === 'Embedded') {
-          const embed = new EmbedBuilder()
-            .setColor(hexColour)
-            .setDescription(replyText)
-            .setAuthor({
-              name: `To ${originalMessage.author.displayName}`,
-              iconURL: originalMessage.author.displayAvatarURL()
-            })
-            .setTimestamp();
-
-          if (originalMessage.guild) {
-            embed.setFooter({
-              text: originalMessage.guild.name,
-              iconURL: originalMessage.guild.iconURL() || 'https://ai.google.dev/static/site-assets/images/share.png'
-            });
-          }
-          await botMessage.edit({ content: ' ', embeds: [embed] });
-        } else {
-          await botMessage.edit({ content: replyText, embeds: [] });
-        }
-      }
-
-      // Записуємо в локальну історію для сумісності з кнопкою "Download Conversation"
-      const newHistory = [
-        { role: 'user', content: [{ text: messageContent }] },
-        { role: 'assistant', content: [{ text: replyText }] }
-      ];
-      await chatHistoryLock.runExclusive(async () => {
-        updateChatHistory(apiChatId, newHistory, botMessage ? botMessage.id : `spont-${Date.now()}`);
-        await saveStateToFile();
-      });
-
-      break;
+      break; 
     } catch (error) {
       console.error('Спроба отримати відповідь від API провалена: ', error);
       attempts--;
 
       if (attempts === 0) {
+        // Гасимо всі таймери затримки, якщо сталася критична помилка
+        clearTimeout(typingControls.startTypingTimeout);
+        if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
+        if (typingControls.typingTimeout) clearTimeout(typingControls.typingTimeout);
+
         if (!isSpontaneous) {
           const errorEmbed = new EmbedBuilder()
             .setColor(0xFF0000)
             .setTitle('Ой, щось пішло не так')
-            .setDescription('оооохх здається мій сервак ліг або інтернет повністю зник спробуй пізніше');
-          if (botMessage) {
-            await botMessage.edit({ content: ' ', embeds: [errorEmbed] });
-          } else {
-            await originalMessage.channel.send({ embeds: [errorEmbed] });
-          }
+            .setDescription('оооохх');
+          await originalMessage.reply({ embeds: [errorEmbed] });
         }
-        break;
+        if (activeRequests.has(userId)) activeRequests.delete(userId);
+        return;
       }
       await delay(1000);
     }
   }
 
+  // ШТУЧНЕ УТРИМАННЯ ВІДПОВІДІ: Перевіряємо скільки часу пройшло з старту
+  const elapsedTime = Date.now() - typingControls.startTime;
+  if (elapsedTime < 10000) {
+    // Якщо API відповіло за 1 чи 2 секунди, вираховуємо залишок до 10 секунд і чекаємо його
+    await delay(10000 - elapsedTime);
+  }
+
+  // Тільки після витримки 10+ секунд повністю гасимо статус друку
+  clearTimeout(typingControls.startTypingTimeout);
+  if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
+  if (typingControls.typingTimeout) clearTimeout(typingControls.typingTimeout);
+
+  try {
+    let finalMessage;
+
+    // Миттєво надсилаємо готову відповідь у чат
+    if (isSpontaneous) {
+      if (userResponsePreference === 'Embedded') {
+        const embed = new EmbedBuilder()
+          .setColor(hexColour)
+          .setDescription(replyText)
+          .setTimestamp();
+        if (originalMessage.guild) {
+          embed.setFooter({ text: originalMessage.guild.name, iconURL: originalMessage.guild.iconURL() });
+        }
+        finalMessage = await originalMessage.channel.send({ embeds: [embed] });
+      } else {
+        finalMessage = await originalMessage.channel.send({ content: replyText });
+      }
+    } else {
+      if (userResponsePreference === 'Embedded') {
+        const embed = new EmbedBuilder()
+          .setColor(hexColour)
+          .setDescription(replyText)
+          .setAuthor({
+            name: `To ${originalMessage.author.displayName}`,
+            iconURL: originalMessage.author.displayAvatarURL()
+          })
+          .setTimestamp();
+
+        if (originalMessage.guild) {
+          embed.setFooter({
+            text: originalMessage.guild.name,
+            iconURL: originalMessage.guild.iconURL() || 'https://ai.google.dev/static/site-assets/images/share.png'
+          });
+        }
+        finalMessage = await originalMessage.reply({ embeds: [embed] });
+      } else {
+        finalMessage = await originalMessage.reply({ content: replyText });
+      }
+    }
+
+    // Оновлення локальних логів для кнопок
+    const newHistory = [
+      { role: 'user', content: [{ text: messageContent }] },
+      { role: 'assistant', content: [{ text: replyText }] }
+    ];
+    await chatHistoryLock.runExclusive(async () => {
+      updateChatHistory(apiChatId, newHistory, finalMessage ? finalMessage.id : `msg-${Date.now()}`);
+      await saveStateToFile();
+    });
+
+  } catch (error) {
+    console.error("Не вдалося надіслати повідомлення користувачу:", error);
+  }
+
+  // Звільняємо юзера зі списку блокування
   if (activeRequests.has(userId)) {
     activeRequests.delete(userId);
   }
@@ -2355,4 +2328,5 @@ async function sendAsTextFile(text, message, orgId) {
 
 // <==========>
 
+console.log(`Logging in with token: ${token}`);
 client.login(token);
