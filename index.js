@@ -228,38 +228,7 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-let activityIndex = 0;
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}!`);
 
-  const rest = new REST().setToken(token);
-  try {
-    console.log('Started refreshing application (/) commands.');
-
-    await rest.put(
-      Routes.applicationCommands(client.user.id), {
-        body: commands
-      },
-    );
-
-    console.log('Successfully reloaded application (/) commands.');
-  } catch (error) {
-    console.error(error);
-  }
-
-  client.user.setPresence({
-    activities: [activities[activityIndex]],
-    status: 'idle',
-  });
-
-  setInterval(() => {
-    activityIndex = (activityIndex + 1) % activities.length;
-    client.user.setPresence({
-      activities: [activities[activityIndex]],
-      status: 'idle',
-    });
-  }, 30000);
-});
 
 // <==========>
 
