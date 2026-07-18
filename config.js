@@ -1,5 +1,5 @@
 export default {
-  defaultResponseFormat: "Embedded",
+  defaultResponseFormat: "Normal",
   defaultTool: "Google Search with URL Context",
   hexColour: "#505050",
   workInDMs: true,
@@ -29,6 +29,6 @@ export default {
     settingsSaveButton: true,
     customServerPersonality: false,
     serverResponsePreference: false,
-    responseStyle: "embedded"
+    responseStyle: "normal"
   }
 };
