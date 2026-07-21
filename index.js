@@ -43,30 +43,7 @@ initialize().catch(console.error);
 
 const MODEL = "gemini-flash-lite-latest";
 
-/*
-`BLOCK_NONE`  -  Always show regardless of probability of unsafe content
-`BLOCK_ONLY_HIGH`  -  Block when high probability of unsafe content
-`BLOCK_MEDIUM_AND_ABOVE`  -  Block when medium or high probability of unsafe content
-`BLOCK_LOW_AND_ABOVE`  -  Block when low, medium or high probability of unsafe content
-`HARM_BLOCK_THRESHOLD_UNSPECIFIED`  -  Threshold is unspecified, block using default threshold
-// */
-// const safetySettings = [{
-//     category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-//     threshold: HarmBlockThreshold.BLOCK_NONE,
-//   },
-//   {
-//     category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-//     threshold: HarmBlockThreshold.BLOCK_NONE,
-//   },
-//   {
-//     category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-//     threshold: HarmBlockThreshold.BLOCK_NONE,
-//   },
-//   {
-//     category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-//     threshold: HarmBlockThreshold.BLOCK_NONE,
-//   },
-// ];
+
 
 const generationConfig = {
   temperature: 1.0,
@@ -105,25 +82,56 @@ const ORESHKA_API_KEY = process.env.ORESHKA_API_KEY || "or_live_8f3a...";
 
 const lastMessageTimes = {};
 
-async function askOreshkaAPI(messageText, chatId, username) {
+/**
+ * Основний запит на генерацію відповіді Орешки
+ */
+async function askOreshkaAPI({ messageText, channelId, platformUserId, username, isPrivate, membersInRoom = [] }) {
   try {
     const response = await axios.post(ORESHKA_API_URL, {
-      message: messageText,
-      chatId: chatId,
-      username: username
+      messageText,
+      channelId,
+      platform: 'discord',
+      platformUserId,
+      username,
+      isPrivate,
+      membersInRoom
     }, {
       headers: {
         'x-oreshka-key': ORESHKA_API_KEY,
         'Content-Type': 'application/json'
       },
-      timeout: 30000 // 30 секунд таймаут
+      timeout: 35000
     });
 
-    // Повертаємо текст відповіді (підлаштуй властивість, якщо твоє API повертає іншу назву ключа)
-    return response.data.response || response.data.reply || response.data.message;
+    return response.data.reply || response.data.response || response.data.message;
   } catch (error) {
     console.error('Помилка при запиті до Oreshka Vercel API:', error.message);
     throw error;
+  }
+}
+
+
+/**
+ * Пасивна відправка контексту чату (коли Орешка мовчить, але слухає)
+ */
+async function savePassiveMessageAPI({ messageText, channelId, platformUserId, username, isPrivate }) {
+  try {
+    await axios.post(`${ORESHKA_API_URL}/passive`, {
+      messageText,
+      channelId,
+      platform: 'discord',
+      platformUserId,
+      username,
+      isPrivate
+    }, {
+      headers: {
+        'x-oreshka-key': ORESHKA_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      timeout: 5000
+    }).catch(() => {}); // Ігноруємо таймаути пасивних логів, щоб не забивати консоль
+  } catch (error) {
+    console.error('Помилка пасивного збереження контексту:', error.message);
   }
 }
 
@@ -168,6 +176,8 @@ client.once('ready', async () => {
   startActivityBooster();
 });
 
+// <=====[ Обробник повідомлень (messageCreate) ]=====>
+
 client.on('messageCreate', async (message) => {
   try {
     if (message.author.bot) return;
@@ -200,22 +210,24 @@ client.on('messageCreate', async (message) => {
             .setColor(0xFF0000)
             .setTitle('Blacklisted')
             .setDescription('You are blacklisted and cannot use this bot.');
-          return message.reply({
-            embeds: [embed]
-          });
+          return message.reply({ embeds: [embed] });
         }
       }
 
-      // <=====[ФІКС ТУТ]=====>
-      // Якщо Орешка вже обробляє запит від цього юзера, нові повідомлення 
-      // просто ігноруються. Ніякого спаму та ембед-помилок у чат!
-      if (activeRequests.has(message.author.id)) {
-        return;
-      }
+      // Блокування повторних запитів від одного юзера
+      if (activeRequests.has(message.author.id)) return;
 
-      // Якщо все ок, додаємо в чергу запитів і починаємо писати відповідь
       activeRequests.add(message.author.id);
       await handleTextMessage(message, isSpontaneous);
+    } else {
+      // ПАСИВНЕ СЛУХАННЯ: якщо бот не відповідає, він усе одно запам'ятовує повідомлення
+      savePassiveMessageAPI({
+        messageText: message.content,
+        channelId: message.channelId,
+        platformUserId: message.author.id,
+        username: message.author.username,
+        isPrivate: isDM
+      });
     }
   } catch (error) {
     console.error('Error processing the message:', error);
@@ -433,18 +445,14 @@ async function editShowSettings(interaction) {
 
 
 
-// <=====[Messages Handling]=====>
-
-// <=====[Modified Messages Handling]=====>
-
-// <=====[Modified Messages Handling]=====>
+// <=====[ Handling Text Messages & API Call ]=====>
 
 async function handleTextMessage(message, isSpontaneous = false) {
   const botId = client.user.id;
   const userId = message.author.id;
-  const channelId = message.channel.id;
-  
-  // КРИТИЧНЕ ПРАВИЛО ЛОРУ: блокуємо картинки та медіа-файли
+  const isDM = message.channel.type === ChannelType.DM;
+
+  // Блокуємо картинки/файли згідно з лором
   if (message.attachments.size > 0) {
     if (activeRequests.has(userId)) activeRequests.delete(userId);
     return message.reply("оооохх я ж казав у мене тут в лісі інтернет ледве текстові повідомлення стягує які ще файли чи фотографії не скидайте мені нічого бо все висне");
@@ -463,59 +471,70 @@ async function handleTextMessage(message, isSpontaneous = false) {
     return;
   }
 
-  // Створюємо об'єкт для тотального контролю часу та таймерів
+  // Контроль статусів друку
   const typingControls = {
-    startTime: Date.now(), // Фіксуємо точний час отримання повідомлення
+    startTime: Date.now(),
     startTypingTimeout: null,
     typingInterval: null,
     typingTimeout: null
   };
 
-  // НАЛАШТУВАННЯ ЗАДРИМКИ СТАТУСУ: Перші 3 секунди Орешка ігнорує статус друку (повна тиша)
   typingControls.startTypingTimeout = setTimeout(() => {
     message.channel.sendTyping();
     typingControls.typingInterval = setInterval(() => {
       message.channel.sendTyping();
     }, 4000);
 
-    // Запобіжник на 2 хвилини
     typingControls.typingTimeout = setTimeout(() => {
       if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
     }, 120000);
-  }, 3000); // 3000 мс = 3 секунди тиші перед «друк...»
+  }, 3000);
 
-  // Генеруємо chatId для твого Vercel API
-  const isChannelChatHistoryEnabled = message.guild ? state.channelWideChatHistory[channelId] : false;
-  const isServerChatHistoryEnabled = message.guild ? state.serverSettings[message.guild.id]?.serverChatHistory : false;
-  const apiChatId = isChannelChatHistoryEnabled ? `discord_channel_${channelId}` : (isServerChatHistoryEnabled ? `discord_server_${message.guild.id}` : `discord_user_${userId}`);
+  // Збираємо список присутніх (якщо це серверний чат)
+  let membersInRoom = [];
+  if (message.guild && message.channel.members) {
+    membersInRoom = message.channel.members
+      .filter(m => !m.user.bot)
+      .map(m => m.user.username)
+      .slice(0, 10);
+  }
 
-  // Передаємо typingControls далі в обробник відповіді
-  await handleModelAPIResponse(message, messageContent, apiChatId, message.author.username, typingControls, isSpontaneous);
+  const apiPayload = {
+    messageText: messageContent,
+    channelId: message.channelId,
+    platformUserId: message.author.id,
+    username: message.author.username,
+    isPrivate: isDM,
+    membersInRoom
+  };
+
+  await handleModelAPIResponse(message, apiPayload, typingControls, isSpontaneous);
 }
 
-// <=====[Model API Response Handling]=====>
+// <=====[ Processing Response ]=====>
 
-async function handleModelAPIResponse(originalMessage, messageContent, apiChatId, username, typingControls, isSpontaneous) {
+async function handleModelAPIResponse(originalMessage, apiPayload, typingControls, isSpontaneous) {
   const userId = originalMessage.author.id;
-  const userResponsePreference = originalMessage.guild && state.serverSettings[originalMessage.guild.id]?.serverResponsePreference ? state.serverSettings[originalMessage.guild.id].responseStyle : getUserResponsePreference(userId);
+  const userResponsePreference = originalMessage.guild && state.serverSettings[originalMessage.guild.id]?.serverResponsePreference 
+    ? state.serverSettings[originalMessage.guild.id].responseStyle 
+    : getUserResponsePreference(userId);
+    
   let attempts = 3;
   let replyText = "";
 
   while (attempts > 0) {
     try {
-      // Запит на Vercel надходить одразу, щоб не втрачати час на обробку нейромережею
-      replyText = await askOreshkaAPI(messageContent, apiChatId, username);
+      replyText = await askOreshkaAPI(apiPayload);
 
       if (!replyText || replyText.trim() === "") {
         throw new Error("Empty response from Oreshka API");
       }
       break; 
     } catch (error) {
-      console.error('Спроба отримати відповідь від API провалена: ', error);
+      console.error('Спроба отримати відповідь від API провалена: ', error.message);
       attempts--;
 
       if (attempts === 0) {
-        // Гасимо всі таймери затримки, якщо сталася критична помилка
         clearTimeout(typingControls.startTypingTimeout);
         if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
         if (typingControls.typingTimeout) clearTimeout(typingControls.typingTimeout);
@@ -534,14 +553,12 @@ async function handleModelAPIResponse(originalMessage, messageContent, apiChatId
     }
   }
 
-  // ШТУЧНЕ УТРИМАННЯ ВІДПОВІДІ: Перевіряємо скільки часу пройшло з старту
+  // Затримка витримування мінімального часу (реалістична пауза роздумів)
   const elapsedTime = Date.now() - typingControls.startTime;
-  if (elapsedTime < 10000) {
-    // Якщо API відповіло за 1 чи 2 секунди, вираховуємо залишок до 10 секунд і чекаємо його
-    await delay(10000 - elapsedTime);
+  if (elapsedTime < 5000) {
+    await delay(5000 - elapsedTime);
   }
 
-  // Тільки після витримки 10+ секунд повністю гасимо статус друку
   clearTimeout(typingControls.startTypingTimeout);
   if (typingControls.typingInterval) clearInterval(typingControls.typingInterval);
   if (typingControls.typingTimeout) clearTimeout(typingControls.typingTimeout);
@@ -549,7 +566,6 @@ async function handleModelAPIResponse(originalMessage, messageContent, apiChatId
   try {
     let finalMessage;
 
-    // Миттєво надсилаємо готову відповідь у чат
     if (isSpontaneous) {
       if (userResponsePreference === 'Embedded') {
         const embed = new EmbedBuilder()
@@ -586,13 +602,13 @@ async function handleModelAPIResponse(originalMessage, messageContent, apiChatId
       }
     }
 
-    // Оновлення локальних логів для кнопок
+    // Збереження локальної історії
     const newHistory = [
-      { role: 'user', content: [{ text: messageContent }] },
+      { role: 'user', content: [{ text: apiPayload.messageText }] },
       { role: 'assistant', content: [{ text: replyText }] }
     ];
     await chatHistoryLock.runExclusive(async () => {
-      updateChatHistory(apiChatId, newHistory, finalMessage ? finalMessage.id : `msg-${Date.now()}`);
+      updateChatHistory(apiPayload.channelId, newHistory, finalMessage ? finalMessage.id : `msg-${Date.now()}`);
       await saveStateToFile();
     });
 
@@ -600,15 +616,16 @@ async function handleModelAPIResponse(originalMessage, messageContent, apiChatId
     console.error("Не вдалося надіслати повідомлення користувачу:", error);
   }
 
-  // Звільняємо юзера зі списку блокування
   if (activeRequests.has(userId)) {
     activeRequests.delete(userId);
   }
 }
 
+// <=====[ Activity Booster ]=====>
+
 function startActivityBooster() {
-  const CHECK_INTERVAL = 30 * 60 * 1000; // Перевіряємо кожні 30 хвилин
-  const INACTIVITY_LIMIT = 4 * 60 * 60 * 1000; // 4 години повної тиші
+  const CHECK_INTERVAL = 30 * 60 * 1000;
+  const INACTIVITY_LIMIT = 4 * 60 * 60 * 1000;
 
   setInterval(async () => {
     const now = Date.now();
@@ -619,15 +636,20 @@ function startActivityBooster() {
           const channel = await client.channels.fetch(channelId);
           if (!channel || !channel.isTextBased()) continue;
 
-          // Імітуємо друк Орешки
           await channel.sendTyping();
 
-          // Посилаємо запит до твого API зі спеціальним системним тригером-промптом
-          const boosterPrompt = "Тобі нудно в чаті давно ніхто не писав напиши якесь одне коротке повідомлення від себе щоб підняти актив можеш згадати шахи чай свій повільний інтернет в лісі або те як ти кодиш віртель пиши виключно маленькими літерами і без розділових знаків";
-          const conversationStarter = await askOreshkaAPI(boosterPrompt, `discord_channel_${channelId}`, "system_booster");
+          const conversationStarter = await askOreshkaAPI({
+            messageText: "Тобі нудно, в чаті давно ніхто не писав, напиши якесь одне коротке повідомлення від себе грунтуючись на контексті чату і останніх повідомлень, щоб підняти актив, або просто так. Можеш згадувати все що пам'ятаєш. пиши виключно маленькими літерами і без розділових знаків",
+            channelId: channelId,
+            platformUserId: "your_mind",
+            username: "Your Mind",
+            isPrivate: false
+          });
 
           if (conversationStarter && conversationStarter.trim() !== "") {
-            const responsePreference = state.serverSettings[channel.guild?.id]?.serverResponsePreference ? state.serverSettings[channel.guild.id].responseStyle : "Normal";
+            const responsePreference = state.serverSettings[channel.guild?.id]?.serverResponsePreference 
+              ? state.serverSettings[channel.guild.id].responseStyle 
+              : "Normal";
             
             if (responsePreference === 'Embedded') {
               const embed = new EmbedBuilder()
@@ -640,7 +662,6 @@ function startActivityBooster() {
             }
           }
 
-          // Скидаємо таймер активності, щоб бот не спамив без зупину
           lastMessageTimes[channelId] = Date.now();
 
         } catch (err) {
